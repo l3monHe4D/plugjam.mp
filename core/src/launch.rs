@@ -217,7 +217,7 @@ fn run(exe: &Path, dir: &Path, dll: &Path, cmdline: &str) -> Result<(), String> 
         };
         let start: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(load);
         let th = CreateRemoteThread(pi.hProcess, null(), 0, Some(start), remote, 0, null_mut());
-        if th == 0 {
+        if th.is_null() {
             VirtualFreeEx(pi.hProcess, remote, 0, MEM_RELEASE);
             return fail(format!("Не удалось загрузить клиентскую библиотеку (код {})", GetLastError()), &pi);
         }
