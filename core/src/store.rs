@@ -1,9 +1,21 @@
 //! Локальное хранилище: ник, путь к игре, папки и избранные серверы.
 //! Один JSON-файл, запись атомарная (временный файл + rename).
 
-use crate::query::normalize_address;
+use crate::{license, query::normalize_address};
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
+
+pub const FREE_FOLDERS: usize = 3;
+pub const PLUS_FOLDERS: usize = 10;
+const MAX_NICKS: usize = 30;
+pub const THEMES: [&str; 3] = ["system", "dark", "light"];
+pub const ICON_PACKS: [&str; 3] = ["classic", "bold", "thin"];
+
+pub fn max_folders(premium: bool) -> usize {
+    if premium { PLUS_FOLDERS } else { FREE_FOLDERS }
+}
+
+const NEED_PLUS: &str = "Нужна подписка Plus";
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -36,6 +48,16 @@ pub struct Store {
     pub folders: Vec<Folder>,
     pub favorites: Vec<Favorite>,
     next_folder_id: u32,
+    /// Случайный ID установки (создаётся один раз).
+    pub user_id: String,
+    /// Лицензионный ключ подписки Plus (пусто — бесплатная версия).
+    pub license: String,
+    pub theme: String,
+    pub icon_pack: String,
+    /// Plus: общий список сохранённых ников.
+    pub nicknames: Vec<String>,
+    /// Plus: ник для конкретного сервера (адрес -> ник).
+    pub server_nicks: BTreeMap<String, String>,
 }
 
 impl Default for Store {
@@ -47,6 +69,12 @@ impl Default for Store {
             folders: vec![],
             favorites: vec![],
             next_folder_id: 1,
+            user_id: String::new(),
+            license: String::new(),
+            theme: "system".into(),
+            icon_pack: "classic".into(),
+            nicknames: vec![],
+            server_nicks: BTreeMap::new(),
         }
     }
 }
@@ -84,6 +112,107 @@ impl Store {
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         fs::write(&tmp, json).map_err(|e| e.to_string())?;
         fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+
+    /// Создаёт ID, если его ещё нет. Возвращает true, если хранилище изменилось.
+    pub fn ensure_user_id(&mut self) -> bool {
+        if license::valid_user_id(&self.user_id) {
+            return false;
+        }
+        self.user_id = license::new_user_id();
+        true
+    }
+
+    /// Срок окончания подписки (unix-секунды), если ключ действителен на момент `now`.
+    pub fn premium_until(&self, now: u64) -> Option<u64> {
+        if self.license.is_empty() {
+            return None;
+        }
+        license::verify(&self.license, &self.user_id, now).ok()
+    }
+
+    pub fn is_premium(&self) -> bool {
+        self.premium_until(license::now_secs()).is_some()
+    }
+
+    pub fn activate(&mut self, key: &str, now: u64) -> Result<(), String> {
+        let exp = license::verify(key, &self.user_id, now)?;
+        if let Some(cur) = self.premium_until(now) {
+            if exp <= cur {
+                return Err("Этот ключ не продлевает текущую подписку".into());
+            }
+        }
+        self.license = key.split_whitespace().collect();
+        Ok(())
+    }
+
+    pub fn set_theme(&mut self, theme: &str) -> Result<(), String> {
+        if !THEMES.contains(&theme) {
+            return Err("Неизвестная тема".into());
+        }
+        self.theme = theme.into();
+        Ok(())
+    }
+
+    /// Паки иконок кроме «classic» доступны с подпиской.
+    pub fn set_icon_pack(&mut self, pack: &str) -> Result<(), String> {
+        if !ICON_PACKS.contains(&pack) {
+            return Err("Неизвестный набор иконок".into());
+        }
+        if pack != "classic" && !self.is_premium() {
+            return Err(NEED_PLUS.into());
+        }
+        self.icon_pack = pack.into();
+        Ok(())
+    }
+
+    pub fn add_saved_nick(&mut self, nick: &str) -> Result<(), String> {
+        if !self.is_premium() {
+            return Err(NEED_PLUS.into());
+        }
+        let n = nick.trim();
+        validate_nickname(n)?;
+        if !self.nicknames.iter().any(|x| x == n) {
+            if self.nicknames.len() >= MAX_NICKS {
+                return Err(format!("Не больше {MAX_NICKS} сохранённых ников"));
+            }
+            self.nicknames.push(n.to_string());
+        }
+        Ok(())
+    }
+
+    pub fn remove_saved_nick(&mut self, nick: &str) {
+        self.nicknames.retain(|x| x != nick);
+        self.server_nicks.retain(|_, v| v != nick);
+    }
+
+    pub fn set_server_nick(&mut self, address: &str, nick: Option<&str>) -> Result<(), String> {
+        if !self.is_premium() {
+            return Err(NEED_PLUS.into());
+        }
+        let a = normalize_address(address)?;
+        match nick.map(str::trim).filter(|n| !n.is_empty()) {
+            Some(n) => {
+                validate_nickname(n)?;
+                self.server_nicks.insert(a, n.to_string());
+            }
+            None => {
+                self.server_nicks.remove(&a);
+            }
+        }
+        Ok(())
+    }
+
+    /// Ник для подключения: у Plus — индивидуальный для сервера, иначе общий.
+    pub fn nick_for(&self, address: &str) -> String {
+        if self.is_premium() {
+            if let Ok(a) = normalize_address(address) {
+                if let Some(n) = self.server_nicks.get(&a) {
+                    return n.clone();
+                }
+            }
+        }
+        self.nickname.clone()
     }
 
     pub fn set_settings(&mut self, nickname: &str, gta_path: &str) -> Result<(), String> {
@@ -162,6 +291,14 @@ impl Store {
 
     pub fn create_folder(&mut self, name: &str) -> Result<u32, String> {
         let name = self.clean_folder_name(name, None)?;
+        let limit = max_folders(self.is_premium());
+        if self.folders.len() >= limit {
+            return Err(if limit == FREE_FOLDERS {
+                format!("Без подписки — до {FREE_FOLDERS} папок. С Plus — до {PLUS_FOLDERS}")
+            } else {
+                format!("Достигнут предел: {PLUS_FOLDERS} папок")
+            });
+        }
         let id = self.next_folder_id;
         self.next_folder_id += 1;
         self.folders.push(Folder { id, name });
@@ -282,5 +419,107 @@ mod tests {
         let s = Store::load(&p);
         assert_eq!(s.nickname, "Abc");
         assert_eq!(s.sort, SortMode::Name);
+    }
+
+    /// Делает хранилище подписчиком: ключ подписан тестовым секретом на `secs` вперёд.
+    fn make_plus(s: &mut Store, secs: u64) -> String {
+        s.ensure_user_id();
+        let key = license::sign(&license::TEST_SECRET, &s.user_id, license::now_secs() + secs).unwrap();
+        s.activate(&key, license::now_secs()).unwrap();
+        key
+    }
+
+    #[test]
+    fn free_folder_limit_is_three() {
+        let mut s = Store::default();
+        for n in ["A", "B", "C"] {
+            s.create_folder(n).unwrap();
+        }
+        let e = s.create_folder("D").unwrap_err();
+        assert!(e.contains("до 3"), "{e}");
+        assert_eq!(max_folders(false), 3);
+        assert_eq!(max_folders(true), 10);
+        // удалить и создать снова можно
+        let id = s.folders[0].id;
+        s.delete_folder(id).unwrap();
+        assert!(s.create_folder("D").is_ok());
+    }
+
+    #[test]
+    fn free_user_cannot_use_plus_features() {
+        let mut s = Store::default();
+        assert!(s.add_saved_nick("Nick_1").unwrap_err().contains("подписка"));
+        assert!(s.set_server_nick("a.b:1", Some("Nick_1")).is_err());
+        assert!(s.set_icon_pack("bold").is_err());
+        assert!(s.set_icon_pack("classic").is_ok());
+        assert!(s.set_icon_pack("nope").is_err());
+        assert!(s.set_theme("light").is_ok());
+        assert!(s.set_theme("pink").is_err());
+        s.nickname = "Main_Nick".into();
+        assert_eq!(s.nick_for("a.b:1"), "Main_Nick");
+        assert!(s.activate("garbage", 1).is_err());
+        assert!(!s.is_premium());
+    }
+
+    #[test]
+    fn user_id_created_once() {
+        let mut s = Store::default();
+        assert!(s.ensure_user_id());
+        let id = s.user_id.clone();
+        assert!(license::valid_user_id(&id));
+        assert!(!s.ensure_user_id());
+        assert_eq!(s.user_id, id);
+    }
+
+    #[test]
+    fn plus_unlocks_ten_folders_nicks_and_icons() {
+        let mut s = Store::default();
+        make_plus(&mut s, 3600);
+        assert!(s.is_premium());
+        for i in 0..10 {
+            s.create_folder(&format!("F{i}")).unwrap();
+        }
+        assert!(s.create_folder("F10").unwrap_err().contains("10"));
+
+        s.add_saved_nick("Nick_1").unwrap();
+        s.add_saved_nick("Nick_1").unwrap(); // без дубликата
+        s.add_saved_nick("Nick_2").unwrap();
+        assert_eq!(s.nicknames.len(), 2);
+        assert!(s.add_saved_nick("x").is_err());
+
+        s.nickname = "Main_Nick".into();
+        s.set_server_nick("HOST.com", Some("Nick_2")).unwrap();
+        assert_eq!(s.nick_for("host.com:7777"), "Nick_2");
+        assert_eq!(s.nick_for("other:7777"), "Main_Nick");
+        s.set_icon_pack("bold").unwrap();
+
+        // удаление ника из списка снимает его и с серверов
+        s.remove_saved_nick("Nick_2");
+        assert_eq!(s.nick_for("host.com:7777"), "Main_Nick");
+        s.set_server_nick("host.com:7777", None).unwrap();
+    }
+
+    #[test]
+    fn expired_plus_falls_back_but_keeps_data() {
+        let mut s = Store::default();
+        let key = make_plus(&mut s, 3600);
+        for i in 0..5 {
+            s.create_folder(&format!("F{i}")).unwrap();
+        }
+        s.add_saved_nick("Nick_1").unwrap();
+        s.set_server_nick("a.b:1", Some("Nick_1")).unwrap();
+        // «через два часа» подписка кончилась
+        assert!(s.premium_until(license::now_secs() + 7200).is_none());
+        assert!(s.premium_until(license::now_secs()).is_some());
+        // повтор того же ключа срок не продлевает
+        assert!(s.activate(&key, license::now_secs()).unwrap_err().contains("не продлевает"));
+        // ключ другого пользователя не подходит
+        let mut other = Store::default();
+        other.ensure_user_id();
+        assert!(other.activate(&key, license::now_secs()).unwrap_err().contains("другого"));
+        // продление новым ключом
+        let longer = license::sign(&license::TEST_SECRET, &s.user_id, license::now_secs() + 9999).unwrap();
+        s.activate(&longer, license::now_secs()).unwrap();
+        assert!(s.premium_until(license::now_secs() + 7200).is_some());
     }
 }

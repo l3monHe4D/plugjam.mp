@@ -4,9 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>plugjam.mp</title>
+<script src="theme.js"></script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div id="splash" aria-hidden="true">
+  <div class="sp-in">
+    <div class="sp-logo"><i class="sp-ring"></i><i class="sp-mark"></i></div>
+    <div class="sp-word"><span>p</span><span>l</span><span>u</span><span>g</span><span>j</span><span>a</span><span>m</span><span class="acc">.</span><span class="acc">m</span><span class="acc">p</span></div>
+    <div class="sp-line"><i></i></div>
+  </div>
+</div>
 <div id="app" data-tab="favorites">
 
   <header class="bar">
@@ -18,7 +26,12 @@
       <button id="bRefresh" class="btn icon" data-i="refresh" title="Обновить (F5)"></button>
       <button id="bSettings" class="btn icon" data-i="sliders" title="Настройки"></button>
     </div>
-    <label class="nick"><span>Ник</span><input id="nick" maxlength="20" spellcheck="false" autocomplete="off"></label>
+    <div class="right-tools">
+      <button id="bPlus" class="btn plus" data-i="crown" title="Подписка Plus">Plus</button>
+      <button id="bTheme" class="btn icon" data-i="moon" title="Тема: тёмная / светлая"></button>
+      <label class="nick"><span>Ник</span><input id="nick" maxlength="20" spellcheck="false" autocomplete="off"></label>
+      <button id="bNicks" class="btn icon" data-i="chevron" title="Сохранённые ники"></button>
+    </div>
   </header>
   <div class="loadbar" id="loadbar"></div>
 

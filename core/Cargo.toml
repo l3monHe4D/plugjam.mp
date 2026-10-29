@@ -11,5 +11,19 @@ tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros"] }
 encoding_rs = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
 
+getrandom = "0.2"
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation", "Win32_Security", "Win32_System_Threading",
+  "Win32_System_Memory", "Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader",
+] }
+
+[[bin]]
+name = "license-tool"
+path = "src/bin/license-tool.rs"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros"] }

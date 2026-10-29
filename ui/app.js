@@ -5,6 +5,9 @@
    Все строки от серверов вставляются через textContent (никакого innerHTML). */
 
 const { invoke, Channel } = window.__TAURI__.core;
+const TAURI = window.__TAURI__;
+// Заставка играет сама (CSS); убираем её из DOM, когда анимация закончилась.
+setTimeout(() => document.getElementById('splash')?.remove(), 1800);
 const $ = (s) => document.querySelector(s);
 const el = (tag, cls, text) => {
   const e = document.createElement(tag);
@@ -22,11 +25,17 @@ const ICONS = {
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
   refresh: svg('<path d="M20 11a8 8 0 10-2.3 5.7M20 4.5V11h-6.5"/>'),
   sliders: svg('<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'),
+  crown: svg('<path d="M4 8l4 4 4-6 4 6 4-4-2 10H6z"/>'),
+  sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6L7 7M17 17l1.4 1.4M18.4 5.6L17 7M7 17l-1.4 1.4"/>'),
+  moon: svg('<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>'),
+  chevron: svg('<path d="M6 9l6 6 6-6"/>'),
+  lock: svg('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>'),
 };
 
 // ───────────────────────── состояние ─────────────────────────
 const S = {
-  store: { nickname: '', gtaPath: '', sort: 'name', folders: [], favorites: [] },
+  store: { nickname: '', gtaPath: '', sort: 'name', folders: [], favorites: [], theme: 'system', iconPackEffective: 'classic',
+           premium: false, premiumUntil: null, maxFolders: 3, nicknames: [], serverNicks: {}, userId: '' },
   tab: 'favorites',
   folder: null,            // null = «Все серверы»
   live: new Map(),         // address -> свежие данные из UDP-опроса
@@ -78,6 +87,7 @@ function ask({ title, text, fields = [], ok = 'OK' }) {
   return new Promise((resolve) => {
     const d = $('#dlg');
     d.replaceChildren();
+    d.classList.remove('wide');
     const form = el('form');
     form.append(el('h2', '', title));
     if (text) form.append(el('p', '', text));
@@ -123,6 +133,30 @@ function ask({ title, text, fields = [], ok = 'OK' }) {
     if (first) { first.focus(); first.select(); }
   });
 }
+
+// Диалог с произвольным содержимым: build(close, redraw) возвращает массив узлов; redraw() перерисовывает.
+function modal(title, build, { wide = false, sub = '' } = {}) {
+  return new Promise((resolve) => {
+    const d = $('#dlg');
+    d.replaceChildren();
+    d.classList.toggle('wide', wide);
+    const box = el('div');
+    const h = el('h2', '', title);
+    if (sub) h.append(el('small', '', sub));
+    let done = false;
+    const close = (v) => { if (done) return; done = true; d.close(); resolve(v); };
+    const render = () => box.replaceChildren(h, ...build(close, render));
+    render();
+    d.append(box);
+    d.oncancel = (e) => { e.preventDefault(); close(null); };
+    d.showModal();
+    document.activeElement?.blur?.(); // без «залипшей» рамки фокуса на первом элементе
+  });
+}
+const btn = (label, fn, cls = '') => { const b = el('button', 'btn ' + cls, label); b.type = 'button'; b.onclick = fn; return b; };
+const section = (title, ...nodes) => { const s = el('div', 'sec'); if (title) s.append(el('h4', '', title)); s.append(...nodes); return s; };
+const fmtDate = (sec) => new Date(sec * 1000).toLocaleDateString('ru-RU');
+const copyText = (t, msg) => navigator.clipboard?.writeText(t).then(() => toast(msg || 'Скопировано')).catch(() => toast('Не удалось скопировать', true));
 
 // ───────────────────────── контекстное меню ─────────────────────────
 function hideMenu() { $('#menu').hidden = true; }
@@ -507,9 +541,26 @@ function select(addr) {
 }
 
 // ───────────────────────── действия ─────────────────────────
-async function mutate(cmd, args) {
-  try { S.store = await invoke(cmd, args); return true; }
+async function mutate(cmd, args, animate = false) {
+  try { S.store = await invoke(cmd, args); applyAppearance(animate); return true; }
   catch (e) { toast(String(e), true); return false; }
+}
+
+// Тема, набор иконок, кнопка Plus — всё, что зависит от состояния хранилища.
+function applyAppearance(animate = false) {
+  const st = S.store;
+  if (window.PJTheme) { PJTheme.set(st.theme, animate); PJTheme.pack(st.iconPackEffective); }
+  const dark = window.PJTheme ? PJTheme.current() === 'dark' : true;
+  $('#bTheme').innerHTML = ICONS[dark ? 'moon' : 'sun'];
+  $('#bTheme').title = dark ? 'Сейчас тёмная тема — включить светлую' : 'Сейчас светлая тема — включить тёмную';
+  const plus = $('#bPlus');
+  plus.classList.toggle('active', !!st.premium);
+  plus.title = st.premium ? `Plus активен до ${fmtDate(st.premiumUntil)}` : 'Подписка Plus';
+}
+
+async function toggleTheme() {
+  const next = window.PJTheme && PJTheme.current() === 'dark' ? 'light' : 'dark';
+  await mutate('set_theme', { theme: next }, true);
 }
 
 function afterStoreChange() {
@@ -556,18 +607,215 @@ async function connect(a = S.selected) {
     toast('Запускаю игру…');
   } catch (e) {
     toast(String(e), true);
-    if (/папк|samp\.exe/i.test(String(e))) openSettings();
+    if (/папк|gta_sa|библиотек/i.test(String(e))) openSettings();
   }
 }
 
+async function gameCheck() {
+  if (!S.store.gtaPath) return null;
+  try { return await invoke('check_game', { path: S.store.gtaPath }); } catch { return null; }
+}
+
+async function pickFolder() {
+  try {
+    const dir = await TAURI.dialog.open({ directory: true, multiple: false, title: 'Папка GTA San Andreas', defaultPath: S.store.gtaPath || undefined });
+    return typeof dir === 'string' ? dir : null;
+  } catch (e) { toast(String(e), true); return null; }
+}
+
 async function openSettings() {
-  const v = await ask({
-    title: 'Настройки',
-    text: 'Игра запускается через samp.exe из папки GTA: San Andreas.',
-    fields: [{ id: 'path', label: 'Папка GTA San Andreas (где лежит samp.exe)', value: S.store.gtaPath, placeholder: 'C:\\Games\\GTA San Andreas' }],
-    ok: 'Сохранить',
-  });
-  if (v && await mutate('save_settings', { nickname: S.store.nickname, gtaPath: v.path })) toast('Сохранено');
+  let check = await gameCheck();
+  await modal('Настройки', (close, redraw) => {
+    // — папка игры —
+    const path = el('input');
+    path.readOnly = true;
+    path.value = S.store.gtaPath || '';
+    path.placeholder = 'Папка с gta_sa.exe не выбрана';
+    path.title = path.value;
+    const browse = btn('Обзор…', async () => {
+      const dir = await pickFolder();
+      if (!dir) return;
+      if (await mutate('save_settings', { nickname: S.store.nickname, gtaPath: dir })) { check = await gameCheck(); redraw(); }
+    }, 'primary');
+    const chips = el('div', 'chips');
+    if (!S.store.gtaPath) chips.append(el('span', 'chip bad', 'Папка не выбрана'));
+    else if (check) {
+      chips.append(el('span', 'chip ' + (check.exe ? 'ok' : 'bad'), check.exe ? 'gta_sa.exe найден' : 'gta_sa.exe не найден'));
+      chips.append(el('span', 'chip ' + (check.clientDll ? 'ok' : 'bad'), check.clientDll ? `Клиент: ${check.clientDll}` : 'Нет plugjam.dll / samp.dll'));
+      if (check.exe && check.exeV100 === false) chips.append(el('span', 'chip warn', 'gta_sa.exe не версии 1.0 US'));
+    }
+    const auto = el('button', 'link', 'Найти автоматически');
+    auto.type = 'button';
+    auto.onclick = async () => {
+      const found = await invoke('detect_game').catch(() => null);
+      if (!found) return toast('Игра не найдена — нажмите «Обзор»', true);
+      if (await mutate('save_settings', { nickname: S.store.nickname, gtaPath: found })) { check = await gameCheck(); redraw(); toast('Папка найдена'); }
+    };
+    const game = section('Игра', Object.assign(el('div', 'line'), {}), chips, Object.assign(el('p', 'note'), {}));
+    game.children[1].append(path, browse);
+    game.lastChild.append(auto, document.createTextNode(' · если клиент установлен в папку с игрой, путь выбирается сам'));
+
+    // — тема —
+    const seg = el('div', 'seg in');
+    for (const [v, label] of [['system', 'Системная'], ['dark', 'Тёмная'], ['light', 'Светлая']]) {
+      const b = el('button', S.store.theme === v ? 'on' : '', label);
+      b.type = 'button';
+      b.onclick = async () => { if (await mutate('set_theme', { theme: v }, true)) redraw(); };
+      seg.append(b);
+    }
+
+    // — иконки —
+    const packs = el('div', 'packs');
+    for (const [k, label] of [['classic', 'Классика'], ['bold', 'Жирные'], ['thin', 'Тонкие']]) {
+      const P = window.PJTheme.PACKS[k];
+      const locked = k !== 'classic' && !S.store.premium;
+      const b = el('button', 'pack' + (S.store.iconPackEffective === k ? ' on' : ''));
+      b.type = 'button';
+      const pv = el('div', 'pv');
+      pv.style.setProperty('--ico-sw', P.sw);
+      pv.style.setProperty('--pr', P.markR);
+      pv.style.setProperty('--prot', P.markRot);
+      pv.insertAdjacentHTML('beforeend', ICONS.play + ICONS.star + ICONS.refresh);
+      pv.prepend(el('i', 'pm'));
+      b.append(pv, el('span', '', label));
+      if (locked) { const l = el('span', 'lock'); l.innerHTML = ICONS.lock; b.append(l); }
+      b.onclick = async () => {
+        if (locked) { close(); openPlus('icons'); return; }
+        if (await mutate('set_icon_pack', { pack: k })) redraw();
+      };
+      packs.append(b);
+    }
+    const iconsSec = section(null, packs);
+    iconsSec.prepend(Object.assign(el('h4'), { innerHTML: 'Иконки' + (S.store.premium ? '' : '<span class="lockbadge">наборы — Plus</span>') }));
+
+    // — ID —
+    const id = el('div', 'kv');
+    const code = el('code', 'mono', S.store.userId || '—');
+    id.append(el('span', '', 'Ваш ID'), code, btn('Копировать', () => copyText(S.store.userId, 'ID скопирован'), 'sm'));
+
+    const actions = el('div', 'actions');
+    actions.append(btn('Закрыть', () => close(), 'primary'));
+    return [game, section('Тема', seg), iconsSec, section('Идентификатор', id), actions];
+  }, { wide: true });
+}
+
+// ───────────────────────── подписка Plus ─────────────────────────
+const UPSELL = {
+  folders: 'Бесплатно доступно 3 папки. С Plus — до 10.',
+  nicks: 'Список сохранённых ников — функция Plus.',
+  icons: 'Наборы иконок — функция Plus.',
+};
+
+async function openPlus(reason) {
+  const info = await invoke('get_donate_info').catch(() => null);
+  await modal('Подписка Plus', (close, redraw) => {
+    const st = S.store;
+    const state = el('div', 'state' + (st.premium ? '' : ' free'), st.premium ? `Plus активен до ${fmtDate(st.premiumUntil)}` : 'Бесплатная версия');
+    const out = [state];
+    if (reason && !st.premium) out.push(el('p', '', UPSELL[reason] || ''));
+    const perks = el('ul', 'perks');
+    for (const t of ['До 10 папок вместо 3', 'Сохранённые ники: общий список и свой ник для каждого сервера', 'Наборы иконок интерфейса']) perks.append(el('li', '', t));
+    const price = el('div', 'price');
+    price.append(el('b', '', `${info ? info.price : '0.99'} USDT`), el('span', '', `/ ${info ? info.periodDays : 30} дней`));
+    out.push(perks, price);
+
+    if (info) {
+      const pay = section('Оплата · только USDT в сети TON');
+      const row = (label, value, onCopy) => {
+        const r = el('div', 'kv');
+        r.append(el('span', '', label), el('code', 'mono', value), btn('Копировать', onCopy, 'sm'));
+        return r;
+      };
+      pay.append(
+        row('Кошелёк', info.wallet, () => copyText(info.wallet, 'Адрес скопирован')),
+        row('Сумма', `${info.price} USDT`, () => copyText(info.price, 'Сумма скопирована')),
+        row('Комментарий', info.comment, () => copyText(info.comment, 'Комментарий скопирован')),
+      );
+      const open = btn('Открыть в кошельке', () => invoke('open_url', { url: info.link }).then(() => toast('Проверьте кошелёк. Если он не открылся — скопируйте данные вручную')).catch((e) => toast(String(e), true)), 'primary');
+      const warn = el('p', 'note');
+      warn.innerHTML = '<b>Важно:</b> в комментарии укажите ваш ID — по нему выдаётся ключ. Другие токены и сети не принимаются, платёж будет потерян.';
+      pay.append(open, warn);
+      out.push(pay);
+    }
+
+    const key = el('input');
+    key.placeholder = 'PJ1.…';
+    key.spellcheck = false;
+    key.autocomplete = 'off';
+    const act = btn('Активировать', async () => {
+      if (!key.value.trim()) return;
+      if (await mutate('activate_license', { key: key.value.trim() })) { toast(`Plus активен до ${fmtDate(S.store.premiumUntil)}`); redraw(); renderSide(); }
+    }, 'primary');
+    const line = el('div', 'line');
+    line.append(key, act);
+    const how = el('p', 'note', 'После оплаты владелец проекта выдаёт ключ на 30 дней по вашему ID. Продление — новый платёж и новый ключ.');
+    out.push(section('Ключ', line, how));
+    const actions = el('div', 'actions');
+    actions.append(btn('Закрыть', () => close()));
+    out.push(actions);
+    return out;
+  }, { wide: true, sub: 'символическая, 0,99 $ в месяц' });
+}
+
+// ───────────────────────── сохранённые ники (Plus) ─────────────────────────
+function serverTitle(addr) {
+  const f = S.store.favorites.find((x) => x.address === addr);
+  return (S.live.get(addr)?.hostname || f?.name || addr);
+}
+
+async function useNick(n) {
+  if (await mutate('save_settings', { nickname: n, gtaPath: S.store.gtaPath })) $('#nick').value = S.store.nickname;
+}
+
+async function openNicks() {
+  if (!S.store.premium) return openPlus('nicks');
+  await modal('Мои ники', (close, redraw) => {
+    const list = el('div', 'nlist');
+    if (!S.store.nicknames.length) list.append(el('div', 'hint', 'Список пуст. Сохраните текущий ник или добавьте новый.'));
+    for (const n of S.store.nicknames) {
+      const r = el('div', 'nrow' + (n === S.store.nickname ? ' cur' : ''));
+      r.append(el('span', '', n));
+      if (n !== S.store.nickname) r.append(btn('Выбрать', async () => { await useNick(n); redraw(); }, 'sm'));
+      const x = el('button', 'x', '×');
+      x.type = 'button';
+      x.title = 'Удалить из списка';
+      x.onclick = async () => { if (await mutate('remove_saved_nick', { nick: n })) redraw(); };
+      r.append(x);
+      list.append(r);
+    }
+    const add = el('input');
+    add.placeholder = 'Новый ник';
+    add.maxLength = 20;
+    add.spellcheck = false;
+    const save = async (n) => { if (n && await mutate('add_saved_nick', { nick: n })) { add.value = ''; redraw(); } };
+    add.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); save(add.value.trim()); } };
+    const line = el('div', 'line');
+    line.append(add, btn('Добавить', () => save(add.value.trim())), btn('Сохранить текущий', () => save(S.store.nickname)));
+
+    const sn = el('div', 'nlist');
+    const entries = Object.entries(S.store.serverNicks);
+    if (!entries.length) sn.append(el('div', 'hint', 'Правый клик по серверу → «Ник для сервера».'));
+    for (const [addr, n] of entries) {
+      const r = el('div', 'nrow');
+      const t = el('span', '', n);
+      t.append(document.createTextNode(' '), el('small', '', '· ' + serverTitle(addr)));
+      const x = el('button', 'x', '×');
+      x.type = 'button';
+      x.onclick = async () => { if (await mutate('set_server_nick', { address: addr, nick: null })) redraw(); };
+      r.append(t, x);
+      sn.append(r);
+    }
+    const actions = el('div', 'actions');
+    actions.append(btn('Закрыть', () => close(), 'primary'));
+    return [section('Общий список', list, line), section('Ники для серверов', sn), actions];
+  }, { wide: true });
+}
+
+async function serverNickDialog(a) {
+  if (!S.store.premium) return openPlus('nicks');
+  const cur = S.store.serverNicks[a] || '';
+  const v = await ask({ title: 'Ник для сервера', text: serverTitle(a), fields: [{ id: 'n', label: 'Ник для этого сервера (пусто — общий ник)', value: cur }], ok: 'Сохранить' });
+  if (v && await mutate('set_server_nick', { address: a, nick: v.n || null })) toast(v.n ? 'Ник для сервера сохранён' : 'Будет использоваться общий ник');
 }
 
 async function addByAddress() {
@@ -580,6 +828,10 @@ async function addByAddress() {
 }
 
 async function newFolder() {
+  if (S.store.folders.length >= S.store.maxFolders) {
+    if (!S.store.premium) return openPlus('folders');
+    return toast(`Достигнут предел: ${S.store.maxFolders} папок`, true);
+  }
   const v = await ask({ title: 'Новая папка', fields: [{ id: 'n', label: 'Название (например, название проекта)' }], ok: 'Создать' });
   if (!v || !v.n) return;
   const before = new Set(S.store.folders.map((f) => f.id));
@@ -606,6 +858,8 @@ async function deleteFolder(id) {
 
 function serverMenu(x, y, a) {
   const items = [{ label: 'Подключиться', fn: () => connect(a) }];
+  const sn = S.store.premium ? S.store.serverNicks[a] : null;
+  items.push({ label: sn ? `Ник для сервера: ${sn}…` : S.store.premium ? 'Ник для сервера…' : 'Ник для сервера (Plus)…', fn: () => serverNickDialog(a) });
   items.push({ label: isFav(a) ? 'Убрать из избранного' : 'В избранное', fn: () => toggleFav(a) });
   const cur = S.store.favorites.find((f) => f.address === a)?.folder ?? null;
   const targets = S.store.folders.filter((f) => f.id !== cur);
@@ -629,6 +883,7 @@ function renderSide() {
     mk(null, 'Все серверы', S.store.favorites.length),
     ...S.store.folders.map((f) => mk(f.id, f.name, S.store.favorites.filter((x) => x.folder === f.id).length)),
   );
+  $('.side-h').textContent = `Папки · ${S.store.folders.length}/${S.store.maxFolders}`;
   $('#side').classList.toggle('collapsed', S.tab !== 'favorites');
 }
 
@@ -685,6 +940,9 @@ function bind() {
   $('#bRefresh').onclick = refresh;
   $('#bSettings').onclick = openSettings;
   $('#bFolder').onclick = newFolder;
+  $('#bPlus').onclick = () => openPlus();
+  $('#bTheme').onclick = toggleTheme;
+  $('#bNicks').onclick = openNicks;
 
   $('#tabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-tab]');
@@ -830,10 +1088,13 @@ function moveSel(d) {
 (async function init() {
   try { S.store = await invoke('get_state'); } catch (e) { toast(String(e), true); }
   bind();
+  applyAppearance(false);
   renderSide();
   updateFavBtn();
   drawGraph();
   clearDetails('Выберите сервер');
   await setTab('favorites');
   if (document.fonts?.ready) document.fonts.ready.then(moveInk);
+  // Первый запуск: игру найти не удалось — после заставки сразу предлагаем выбрать папку.
+  if (!S.store.gtaPath) setTimeout(() => { toast('Папка игры не найдена — выберите её'); openSettings(); }, 1900);
 })();
