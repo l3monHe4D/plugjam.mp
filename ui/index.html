@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>plugjam.mp</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app" data-tab="favorites">
+
+  <header class="bar">
+    <div class="logo"><i class="mark"></i><b>plugjam</b><span>.mp</span></div>
+    <div class="tools">
+      <button id="bConnect" class="btn primary" data-i="play" title="Подключиться (Enter)">Играть</button>
+      <button id="bFav" class="btn icon" data-i="star" title="В избранное / убрать"></button>
+      <button id="bAdd" class="btn icon" data-i="plus" title="Добавить сервер по адресу"></button>
+      <button id="bRefresh" class="btn icon" data-i="refresh" title="Обновить (F5)"></button>
+      <button id="bSettings" class="btn icon" data-i="sliders" title="Настройки"></button>
+    </div>
+    <label class="nick"><span>Ник</span><input id="nick" maxlength="20" spellcheck="false" autocomplete="off"></label>
+  </header>
+  <div class="loadbar" id="loadbar"></div>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="favorites" class="on">Favorites</button>
+    <button data-tab="internet">Internet</button>
+    <button data-tab="top">Top 10</button>
+    <i class="ink" id="ink"></i>
+    <div class="grow"></div>
+    <input id="search" type="search" placeholder="Поиск по названию или адресу" spellcheck="false" autocomplete="off">
+    <div class="seg" id="sort" role="group" aria-label="Сортировка">
+      <button data-sort="name">А–Я</button>
+      <button data-sort="online">Онлайн</button>
+    </div>
+  </nav>
+
+  <main class="main">
+    <aside class="side" id="side">
+      <div class="side-in">
+        <div class="side-h">Папки</div>
+        <div id="folders"></div>
+        <button id="bFolder" class="addfold">+ Новая папка</button>
+      </div>
+    </aside>
+
+    <section class="center">
+      <div id="tablewrap" class="tablewrap">
+        <div class="thead"><span></span><span>Название</span><span>Игроки</span><span>Пинг</span><span>Мод</span><span>Язык</span></div>
+        <div class="vlist" id="vlist"><div class="vspacer" id="vspacer"><div class="vwin" id="vwin"></div></div></div>
+        <div class="empty" id="empty" hidden></div>
+      </div>
+      <div class="top" id="top" hidden></div>
+    </section>
+
+    <aside class="right">
+      <section class="box"><h3>Игроки <small id="pcount"></small></h3><div class="plist" id="players"></div></section>
+      <section class="box"><h3>Правила</h3><div class="rules" id="rules"></div></section>
+    </aside>
+  </main>
+
+  <footer class="foot">
+    <div class="panel filters">
+      <h3>Фильтр</h3>
+      <label class="f"><span>Мод</span><input id="fMode" spellcheck="false" autocomplete="off"></label>
+      <label class="f"><span>Язык</span><input id="fLang" spellcheck="false" autocomplete="off"></label>
+      <div class="checks">
+        <label><input type="checkbox" id="fFull"><i></i>Не полные</label>
+        <label><input type="checkbox" id="fEmpty"><i></i>Не пустые</label>
+        <label><input type="checkbox" id="fPass"><i></i>Без пароля</label>
+      </div>
+    </div>
+    <div class="panel info">
+      <h3>Сервер</h3>
+      <div class="iname" id="iName">Выберите сервер в списке</div>
+      <dl>
+        <dt>Адрес</dt><dd id="iAddr">—</dd>
+        <dt>Игроки</dt><dd id="iPlayers">—</dd>
+        <dt>Пинг</dt><dd id="iPing">—</dd>
+        <dt>Мод</dt><dd id="iMode">—</dd>
+        <dt>Язык</dt><dd id="iLang">—</dd>
+      </dl>
+    </div>
+    <div class="panel graph">
+      <h3>Пинг <small id="gping"></small></h3>
+      <svg id="graph" viewBox="0 0 200 60" preserveAspectRatio="none" aria-hidden="true">
+        <line x1="0" y1="15" x2="200" y2="15" class="grid"/><line x1="0" y1="30" x2="200" y2="30" class="grid"/><line x1="0" y1="45" x2="200" y2="45" class="grid"/>
+        <polyline id="gline" points=""/>
+      </svg>
+    </div>
+  </footer>
+
+  <div class="status" id="status"></div>
+</div>
+
+<dialog id="dlg"></dialog>
+<div id="menu" class="menu" hidden></div>
+<div id="toast" class="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>

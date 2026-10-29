@@ -1,0 +1,15 @@
+[package]
+name = "plugjam-core"
+version = "0.1.0"
+edition = "2021"
+description = "Сетевое ядро plugjam.mp: SA-MP query, хранилище, запуск игры"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros"] }
+encoding_rs = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros"] }
