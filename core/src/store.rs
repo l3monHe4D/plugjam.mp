@@ -9,7 +9,8 @@ pub const FREE_FOLDERS: usize = 3;
 pub const PLUS_FOLDERS: usize = 10;
 const MAX_NICKS: usize = 30;
 pub const THEMES: [&str; 3] = ["system", "dark", "light"];
-pub const ICON_PACKS: [&str; 3] = ["classic", "bold", "thin"];
+/// Иконки лаунчера (окно и панель задач). Всё, кроме classic, — Plus.
+pub const APP_ICONS: [&str; 5] = ["classic", "sunset", "ocean", "violet", "mono"];
 
 pub fn max_folders(premium: bool) -> usize {
     if premium { PLUS_FOLDERS } else { FREE_FOLDERS }
@@ -53,7 +54,7 @@ pub struct Store {
     /// Лицензионный ключ подписки Plus (пусто — бесплатная версия).
     pub license: String,
     pub theme: String,
-    pub icon_pack: String,
+    pub app_icon: String,
     /// Plus: общий список сохранённых ников.
     pub nicknames: Vec<String>,
     /// Plus: ник для конкретного сервера (адрес -> ник).
@@ -72,7 +73,7 @@ impl Default for Store {
             user_id: String::new(),
             license: String::new(),
             theme: "system".into(),
-            icon_pack: "classic".into(),
+            app_icon: "classic".into(),
             nicknames: vec![],
             server_nicks: BTreeMap::new(),
         }
@@ -125,6 +126,12 @@ impl Store {
 
     /// Срок окончания подписки (unix-секунды), если ключ действителен на момент `now`.
     pub fn premium_until(&self, now: u64) -> Option<u64> {
+        // Только в отладочных сборках (`cargo tauri dev`): PLUGJAM_DEV_PLUS=1 включает Plus для проверки.
+        // В релизной сборке этого кода нет.
+        #[cfg(debug_assertions)]
+        if std::env::var("PLUGJAM_DEV_PLUS").as_deref() == Ok("1") {
+            return Some(now + 365 * 86_400);
+        }
         if self.license.is_empty() {
             return None;
         }
@@ -154,16 +161,21 @@ impl Store {
         Ok(())
     }
 
-    /// Паки иконок кроме «classic» доступны с подпиской.
-    pub fn set_icon_pack(&mut self, pack: &str) -> Result<(), String> {
-        if !ICON_PACKS.contains(&pack) {
-            return Err("Неизвестный набор иконок".into());
+    /// Иконки лаунчера кроме «classic» доступны с подпиской.
+    pub fn set_app_icon(&mut self, icon: &str) -> Result<(), String> {
+        if !APP_ICONS.contains(&icon) {
+            return Err("Неизвестная иконка".into());
         }
-        if pack != "classic" && !self.is_premium() {
+        if icon != "classic" && !self.is_premium() {
             return Err(NEED_PLUS.into());
         }
-        self.icon_pack = pack.into();
+        self.app_icon = icon.into();
         Ok(())
+    }
+
+    /// Иконка, которая реально применяется: без подписки всегда classic.
+    pub fn app_icon_effective(&self) -> &str {
+        if self.is_premium() { &self.app_icon } else { "classic" }
     }
 
     pub fn add_saved_nick(&mut self, nick: &str) -> Result<(), String> {
@@ -450,9 +462,9 @@ mod tests {
         let mut s = Store::default();
         assert!(s.add_saved_nick("Nick_1").unwrap_err().contains("подписка"));
         assert!(s.set_server_nick("a.b:1", Some("Nick_1")).is_err());
-        assert!(s.set_icon_pack("bold").is_err());
-        assert!(s.set_icon_pack("classic").is_ok());
-        assert!(s.set_icon_pack("nope").is_err());
+        assert!(s.set_app_icon("sunset").is_err());
+        assert!(s.set_app_icon("classic").is_ok());
+        assert!(s.set_app_icon("nope").is_err());
         assert!(s.set_theme("light").is_ok());
         assert!(s.set_theme("pink").is_err());
         s.nickname = "Main_Nick".into();
@@ -472,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn plus_unlocks_ten_folders_nicks_and_icons() {
+    fn plus_unlocks_ten_folders_nicks_and_launcher_icon() {
         let mut s = Store::default();
         make_plus(&mut s, 3600);
         assert!(s.is_premium());
@@ -491,7 +503,8 @@ mod tests {
         s.set_server_nick("HOST.com", Some("Nick_2")).unwrap();
         assert_eq!(s.nick_for("host.com:7777"), "Nick_2");
         assert_eq!(s.nick_for("other:7777"), "Main_Nick");
-        s.set_icon_pack("bold").unwrap();
+        s.set_app_icon("ocean").unwrap();
+        assert_eq!(s.app_icon_effective(), "ocean");
 
         // удаление ника из списка снимает его и с серверов
         s.remove_saved_nick("Nick_2");
@@ -511,6 +524,7 @@ mod tests {
         // «через два часа» подписка кончилась
         assert!(s.premium_until(license::now_secs() + 7200).is_none());
         assert!(s.premium_until(license::now_secs()).is_some());
+        s.set_app_icon("violet").unwrap();
         // повтор того же ключа срок не продлевает
         assert!(s.activate(&key, license::now_secs()).unwrap_err().contains("не продлевает"));
         // ключ другого пользователя не подходит

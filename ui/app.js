@@ -34,7 +34,7 @@ const ICONS = {
 
 // ───────────────────────── состояние ─────────────────────────
 const S = {
-  store: { nickname: '', gtaPath: '', sort: 'name', folders: [], favorites: [], theme: 'system', iconPackEffective: 'classic',
+  store: { nickname: '', gtaPath: '', sort: 'name', folders: [], favorites: [], theme: 'system', appIconEffective: 'classic',
            premium: false, premiumUntil: null, maxFolders: 3, nicknames: [], serverNicks: {}, userId: '' },
   tab: 'favorites',
   folder: null,            // null = «Все серверы»
@@ -508,6 +508,7 @@ async function loadDetails(addr) {
     if (S.pingHist.length > 40) S.pingHist.shift();
     drawGraph();
     showBasic(lookup(addr));
+    showCover(addr);
     renderDetails(d);
     schedulePatch(addr);
   } catch (e) {
@@ -528,6 +529,39 @@ function updateFavBtn() {
   $('#bConnect').disabled = !S.selected;
 }
 
+// ───────────────────────── обложка проекта (эксперимент) ─────────────────────────
+S.covers = new Map();   // hostname -> {dataUrl, source} | null
+let coverSeq = 0, coverHost = null;
+
+function paintCover(c, title) {
+  const box = $('#cover');
+  box.classList.remove('loading', 'show');
+  if (!c) { box.hidden = true; return; }
+  const img = $('#coverImg');
+  img.onload = () => { void box.offsetWidth; box.classList.add('show'); };
+  img.src = c.dataUrl;
+  $('#coverName').textContent = title;
+  $('#coverTag').textContent = c.source === 'vk-cover' ? 'VK · обложка' : 'VK';
+  box.hidden = false;
+}
+
+async function showCover(addr) {
+  const host = (lookup(addr).hostname || '').trim();
+  if (host === coverHost) return;
+  coverHost = host;
+  const seq = ++coverSeq;
+  const box = $('#cover');
+  if (S.covers.has(host)) return paintCover(S.covers.get(host), host);
+  box.classList.remove('show');
+  // индикатор загрузки — только если ответ задерживается (сеть), мгновенный «нет обложки» не мигает
+  const t = setTimeout(() => { if (seq === coverSeq) { box.hidden = false; box.classList.add('loading'); $('#coverImg').removeAttribute('src'); $('#coverName').textContent = ''; } }, 150);
+  let c = null;
+  try { c = await invoke('get_cover', { hostname: host }); } catch { c = null; }
+  clearTimeout(t);
+  S.covers.set(host, c);
+  if (seq === coverSeq) paintCover(c, host);
+}
+
 function select(addr) {
   if (S.selected === addr) return;
   S.selected = addr;
@@ -537,6 +571,7 @@ function select(addr) {
   showBasic(lookup(addr));
   clearDetails();
   updateFavBtn();
+  showCover(addr);
   startPolling(addr);
 }
 
@@ -549,7 +584,7 @@ async function mutate(cmd, args, animate = false) {
 // Тема, набор иконок, кнопка Plus — всё, что зависит от состояния хранилища.
 function applyAppearance(animate = false) {
   const st = S.store;
-  if (window.PJTheme) { PJTheme.set(st.theme, animate); PJTheme.pack(st.iconPackEffective); }
+  if (window.PJTheme) PJTheme.set(st.theme, animate);
   const dark = window.PJTheme ? PJTheme.current() === 'dark' : true;
   $('#bTheme').innerHTML = ICONS[dark ? 'moon' : 'sun'];
   $('#bTheme').title = dark ? 'Сейчас тёмная тема — включить светлую' : 'Сейчас светлая тема — включить тёмную';
@@ -643,6 +678,7 @@ async function openSettings() {
       chips.append(el('span', 'chip ' + (check.exe ? 'ok' : 'bad'), check.exe ? 'gta_sa.exe найден' : 'gta_sa.exe не найден'));
       chips.append(el('span', 'chip ' + (check.clientDll ? 'ok' : 'bad'), check.clientDll ? `Клиент: ${check.clientDll}` : 'Нет plugjam.dll / samp.dll'));
       if (check.exe && check.exeV100 === false) chips.append(el('span', 'chip warn', 'gta_sa.exe не версии 1.0 US'));
+      if (check.bitnessOk === false) chips.append(el('span', 'chip bad', 'Нужна 32-битная сборка лаунчера'));
     }
     const auto = el('button', 'link', 'Найти автоматически');
     auto.type = 'button';
@@ -664,29 +700,26 @@ async function openSettings() {
       seg.append(b);
     }
 
-    // — иконки —
-    const packs = el('div', 'packs');
-    for (const [k, label] of [['classic', 'Классика'], ['bold', 'Жирные'], ['thin', 'Тонкие']]) {
-      const P = window.PJTheme.PACKS[k];
+    // — иконка лаунчера —
+    const grid = el('div', 'appicons');
+    for (const [k, label] of [['classic', 'Классика'], ['sunset', 'Закат'], ['ocean', 'Океан'], ['violet', 'Фиолет'], ['mono', 'Моно']]) {
       const locked = k !== 'classic' && !S.store.premium;
-      const b = el('button', 'pack' + (S.store.iconPackEffective === k ? ' on' : ''));
+      const b = el('button', 'appicon' + (S.store.appIconEffective === k ? ' on' : '') + (locked ? ' locked' : ''));
       b.type = 'button';
-      const pv = el('div', 'pv');
-      pv.style.setProperty('--ico-sw', P.sw);
-      pv.style.setProperty('--pr', P.markR);
-      pv.style.setProperty('--prot', P.markRot);
-      pv.insertAdjacentHTML('beforeend', ICONS.play + ICONS.star + ICONS.refresh);
-      pv.prepend(el('i', 'pm'));
-      b.append(pv, el('span', '', label));
+      const img = el('img');
+      img.src = `appicons/${k}.png`;
+      img.alt = '';
+      b.append(img, el('span', '', label));
       if (locked) { const l = el('span', 'lock'); l.innerHTML = ICONS.lock; b.append(l); }
       b.onclick = async () => {
         if (locked) { close(); openPlus('icons'); return; }
-        if (await mutate('set_icon_pack', { pack: k })) redraw();
+        if (S.store.appIconEffective === k) return;
+        if (await mutate('set_app_icon', { icon: k })) { redraw(); toast('Иконка окна изменена'); }
       };
-      packs.append(b);
+      grid.append(b);
     }
-    const iconsSec = section(null, packs);
-    iconsSec.prepend(Object.assign(el('h4'), { innerHTML: 'Иконки' + (S.store.premium ? '' : '<span class="lockbadge">наборы — Plus</span>') }));
+    const iconsSec = section(null, grid, el('p', 'note', 'Меняется иконка окна и панели задач. Иконка файла .exe и ярлыков остаётся прежней.'));
+    iconsSec.prepend(Object.assign(el('h4'), { innerHTML: 'Иконка лаунчера' + (S.store.premium ? '' : '<span class="lockbadge">смена — Plus</span>') }));
 
     // — ID —
     const id = el('div', 'kv');
@@ -703,7 +736,7 @@ async function openSettings() {
 const UPSELL = {
   folders: 'Бесплатно доступно 3 папки. С Plus — до 10.',
   nicks: 'Список сохранённых ников — функция Plus.',
-  icons: 'Наборы иконок — функция Plus.',
+  icons: 'Смена иконки лаунчера — функция Plus.',
 };
 
 async function openPlus(reason) {
@@ -714,29 +747,40 @@ async function openPlus(reason) {
     const out = [state];
     if (reason && !st.premium) out.push(el('p', '', UPSELL[reason] || ''));
     const perks = el('ul', 'perks');
-    for (const t of ['До 10 папок вместо 3', 'Сохранённые ники: общий список и свой ник для каждого сервера', 'Наборы иконок интерфейса']) perks.append(el('li', '', t));
+    for (const t of ['До 10 папок вместо 3', 'Сохранённые ники: общий список и свой ник для каждого сервера', 'Иконка лаунчера на выбор']) perks.append(el('li', '', t));
     const price = el('div', 'price');
     price.append(el('b', '', `${info ? info.price : '0.99'} USDT`), el('span', '', `/ ${info ? info.periodDays : 30} дней`));
     out.push(perks, price);
 
+    const row = (label, value, onCopy) => {
+      const r = el('div', 'kv');
+      r.append(el('span', '', label), el('code', 'mono', value), btn('Копировать', onCopy, 'sm'));
+      return r;
+    };
+    const wayTon = el('div', 'way');
+    wayTon.append(el('h4', '', 'Способ 1 · USDT в сети TON'));
     if (info) {
-      const pay = section('Оплата · только USDT в сети TON');
-      const row = (label, value, onCopy) => {
-        const r = el('div', 'kv');
-        r.append(el('span', '', label), el('code', 'mono', value), btn('Копировать', onCopy, 'sm'));
-        return r;
-      };
-      pay.append(
+      wayTon.append(
         row('Кошелёк', info.wallet, () => copyText(info.wallet, 'Адрес скопирован')),
         row('Сумма', `${info.price} USDT`, () => copyText(info.price, 'Сумма скопирована')),
         row('Комментарий', info.comment, () => copyText(info.comment, 'Комментарий скопирован')),
       );
-      const open = btn('Открыть в кошельке', () => invoke('open_url', { url: info.link }).then(() => toast('Проверьте кошелёк. Если он не открылся — скопируйте данные вручную')).catch((e) => toast(String(e), true)), 'primary');
       const warn = el('p', 'note');
       warn.innerHTML = '<b>Важно:</b> в комментарии укажите ваш ID — по нему выдаётся ключ. Другие токены и сети не принимаются, платёж будет потерян.';
-      pay.append(open, warn);
-      out.push(pay);
+      wayTon.append(warn);
     }
+    const handle = info?.telegramHandle || '@irishatemskey';
+    const tgUrl = info?.telegramUrl || 'https://t.me/irishatemskey';
+    const wayTg = el('div', 'way');
+    wayTg.append(el('h4', '', 'Способ 2 · Telegram'));
+    wayTg.append(el('p', 'note', `Напишите разработчику ${handle} и отправьте свой ID (${st.userId}) — он подскажет, как оформить подписку, и пришлёт ключ.`));
+    const tgLine = el('div', 'line');
+    tgLine.append(btn('Написать в Telegram', () => {
+      copyText(st.userId, 'ID скопирован — вставьте его в чат');
+      invoke('open_url', { url: tgUrl }).catch((e) => toast(String(e), true));
+    }, 'primary'), btn('Копировать ID', () => copyText(st.userId, 'ID скопирован')));
+    wayTg.append(tgLine);
+    out.push(wayTon, wayTg);
 
     const key = el('input');
     key.placeholder = 'PJ1.…';
@@ -748,7 +792,7 @@ async function openPlus(reason) {
     }, 'primary');
     const line = el('div', 'line');
     line.append(key, act);
-    const how = el('p', 'note', 'После оплаты владелец проекта выдаёт ключ на 30 дней по вашему ID. Продление — новый платёж и новый ключ.');
+    const how = el('p', 'note', 'Ключ выдаётся на 30 дней по вашему ID. Продление — новая оплата и новый ключ.');
     out.push(section('Ключ', line, how));
     const actions = el('div', 'actions');
     actions.append(btn('Закрыть', () => close()));

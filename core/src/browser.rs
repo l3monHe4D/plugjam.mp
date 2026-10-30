@@ -41,7 +41,7 @@ pub fn parse_list(json: &str) -> Result<Vec<ServerInfo>, String> {
         .collect())
 }
 
-fn client() -> &'static reqwest::Client {
+pub fn client() -> &'static reqwest::Client {
     static C: OnceLock<reqwest::Client> = OnceLock::new();
     C.get_or_init(|| {
         reqwest::Client::builder()

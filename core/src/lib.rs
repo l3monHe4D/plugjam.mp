@@ -1,6 +1,7 @@
 //! Ядро plugjam.mp. Не зависит от Tauri, поэтому тестируется отдельно.
 
 pub mod browser;
+pub mod covers;
 pub mod donate;
 pub mod launch;
 pub mod license;

@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use plugjam_core::{
-    browser, donate,
+    browser, covers, donate,
     launch::{self, GameCheck},
     license,
     model::{Player, Rule, ServerInfo},
@@ -35,8 +35,8 @@ struct View {
     premium: bool,
     premium_until: Option<u64>,
     max_folders: usize,
-    /// Выбранный пак иконок; без подписки всегда classic.
-    icon_pack_effective: String,
+    /// Иконка лаунчера, которая реально применена; без подписки всегда classic.
+    app_icon_effective: String,
 }
 
 fn view(st: &Store) -> View {
@@ -45,7 +45,7 @@ fn view(st: &Store) -> View {
         premium: until.is_some(),
         premium_until: until,
         max_folders: max_folders(until.is_some()),
-        icon_pack_effective: if until.is_some() { st.icon_pack.clone() } else { "classic".into() },
+        app_icon_effective: st.app_icon_effective().to_string(),
         store: st.clone(),
     }
 }
@@ -132,9 +132,38 @@ fn set_theme(s: State<'_, AppState>, theme: String) -> Result<View, String> {
     edit(&s, |st| st.set_theme(&theme))
 }
 
+fn icon_bytes(id: &str) -> &'static [u8] {
+    match id {
+        "sunset" => include_bytes!("../icons/variants/sunset.png"),
+        "ocean" => include_bytes!("../icons/variants/ocean.png"),
+        "violet" => include_bytes!("../icons/variants/violet.png"),
+        "mono" => include_bytes!("../icons/variants/mono.png"),
+        _ => include_bytes!("../icons/variants/classic.png"),
+    }
+}
+
+/// Меняет иконку окна и панели задач. Иконка самого .exe и ярлыков остаётся прежней (так устроена Windows).
+fn apply_icon(app: &tauri::AppHandle, id: &str) {
+    if let Some(w) = app.get_webview_window("main") {
+        if let Ok(img) = tauri::image::Image::from_bytes(icon_bytes(id)) {
+            let _ = w.set_icon(img);
+        }
+    }
+}
+
 #[tauri::command]
-fn set_icon_pack(s: State<'_, AppState>, pack: String) -> Result<View, String> {
-    edit(&s, |st| st.set_icon_pack(&pack))
+fn set_app_icon(app: tauri::AppHandle, s: State<'_, AppState>, icon: String) -> Result<View, String> {
+    let v = edit(&s, |st| st.set_app_icon(&icon))?;
+    apply_icon(&app, &v.app_icon_effective);
+    Ok(v)
+}
+
+/// Обложка проекта (эксперимент: пока только Gambit). None — для этого сервера обложки нет.
+#[tauri::command]
+async fn get_cover(app: tauri::AppHandle, hostname: String) -> Result<Option<covers::Cover>, String> {
+    let Some(slug) = covers::source_for(&hostname) else { return Ok(None) };
+    let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("covers");
+    covers::fetch(slug, option_env!("PLUGJAM_VK_TOKEN"), &dir).await.map(Some)
 }
 
 #[tauri::command]
@@ -176,10 +205,10 @@ fn get_donate_info(s: State<'_, AppState>) -> Result<donate::Donate, String> {
     Ok(donate::info(&g.user_id))
 }
 
-/// Открывает ссылку ton:// (кошелёк) или https:// системой. Команда без оболочки: адрес — один аргумент.
+/// Открывает https-ссылку системным браузером (например, t.me). Команда без оболочки: адрес — один аргумент.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
-    let ok_scheme = url.starts_with("ton://") || url.starts_with("https://");
+    let ok_scheme = url.starts_with("https://");
     let ok_chars = !url.chars().any(|c| c.is_control() || c.is_whitespace() || "\"'<>^|`".contains(c));
     if !ok_scheme || !ok_chars || url.len() > 600 {
         return Err("Недопустимая ссылка".into());
@@ -278,7 +307,14 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
+            let mut dir = app.path().app_data_dir()?;
+            // `plugjam.exe --profile free` и `--profile plus` — раздельные данные, удобно проверять обе версии.
+            let args: Vec<String> = std::env::args().collect();
+            if let Some(i) = args.iter().position(|a| a == "--profile") {
+                if let Some(name) = args.get(i + 1).filter(|n| !n.is_empty() && n.len() <= 32 && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')) {
+                    dir = dir.join("profiles").join(name);
+                }
+            }
             let path = dir.join("store.json");
             let mut st = Store::load(&path);
             // Первый запуск: создаём случайный ID и ищем папку игры без участия пользователя.
@@ -292,6 +328,7 @@ fn main() {
             if dirty {
                 let _ = st.save(&path);
             }
+            apply_icon(app.handle(), st.app_icon_effective());
             app.manage(AppState {
                 store: Mutex::new(st),
                 path,
@@ -315,7 +352,8 @@ fn main() {
             fetch_internet,
             connect,
             set_theme,
-            set_icon_pack,
+            set_app_icon,
+            get_cover,
             activate_license,
             add_saved_nick,
             remove_saved_nick,

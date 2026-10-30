@@ -24,6 +24,8 @@ pub struct GameCheck {
     pub client_dll: Option<String>,
     /// None — версию определить не удалось.
     pub exe_v100: Option<bool>,
+    /// false — разрядность лаунчера не совпадает с игрой (gta_sa.exe 32-битный).
+    pub bitness_ok: Option<bool>,
 }
 
 pub fn check_game(path: &str) -> GameCheck {
@@ -33,7 +35,39 @@ pub fn check_game(path: &str) -> GameCheck {
         exe: exe.is_file(),
         client_dll: CLIENT_DLLS.iter().find(|d| dir.join(d).is_file()).map(|d| d.to_string()),
         exe_v100: std::fs::metadata(&exe).ok().map(|m| m.len() == EXE_V100_SIZE),
+        bitness_ok: pe_machine(&exe).map(|m| bitness_error(m, cfg!(target_pointer_width = "64")).is_none()),
     }
+}
+
+// ───────────────────────── разрядность ─────────────────────────
+// gta_sa.exe — 32-битный. Чтобы загрузить библиотеку в его процесс, лаунчер должен быть тоже
+// 32-битным: адрес LoadLibraryW берётся из kernel32 самого лаунчера, а у 64-битного он другой.
+
+const MACHINE_X86: u16 = 0x014c;
+
+/// Тип процессора из PE-заголовка (0x14c — x86, 0x8664 — x64).
+pub fn pe_machine(path: &Path) -> Option<u16> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut dos = [0u8; 64];
+    f.read_exact(&mut dos).ok()?;
+    if &dos[..2] != b"MZ" {
+        return None;
+    }
+    let off = u32::from_le_bytes([dos[0x3c], dos[0x3d], dos[0x3e], dos[0x3f]]) as u64;
+    f.seek(SeekFrom::Start(off)).ok()?;
+    let mut h = [0u8; 6];
+    f.read_exact(&mut h).ok()?;
+    (&h[..4] == b"PE\0\0").then(|| u16::from_le_bytes([h[4], h[5]]))
+}
+
+/// Сообщение об ошибке, если лаунчер нельзя использовать с такой игрой.
+pub fn bitness_error(game_machine: u16, launcher_is_64bit: bool) -> Option<String> {
+    (game_machine == MACHINE_X86 && launcher_is_64bit).then(|| {
+        "Эта сборка plugjam.mp 64-битная, а gta_sa.exe 32-битный — библиотеку в игру так не загрузить. \
+         Установите 32-битную сборку (x86)"
+            .to_string()
+    })
 }
 
 // ───────────────────────── поиск папки игры ─────────────────────────
@@ -137,6 +171,11 @@ pub fn launch(gta_path: &str, address: &str, nickname: &str, password: Option<&s
         .map(|d| dir.join(d))
         .find(|p| p.is_file())
         .ok_or("В папке игры нет клиентской библиотеки (plugjam.dll или samp.dll)")?;
+    if let Some(m) = pe_machine(&exe) {
+        if let Some(e) = bitness_error(m, cfg!(target_pointer_width = "64")) {
+            return Err(e);
+        }
+    }
     let cmdline = build_cmdline(&exe, nickname, &host, port, password)?;
     run(&exe, dir, &dll, &cmdline)
 }
@@ -217,17 +256,24 @@ fn run(exe: &Path, dir: &Path, dll: &Path, cmdline: &str) -> Result<(), String> 
         };
         let start: unsafe extern "system" fn(*mut c_void) -> u32 = std::mem::transmute(load);
         let th = CreateRemoteThread(pi.hProcess, null(), 0, Some(start), remote, 0, null_mut());
-        if th.is_null() {
+        if th == 0 {
             VirtualFreeEx(pi.hProcess, remote, 0, MEM_RELEASE);
             return fail(format!("Не удалось загрузить клиентскую библиотеку (код {})", GetLastError()), &pi);
         }
-        WaitForSingleObject(th, 10_000);
+        let waited = WaitForSingleObject(th, 10_000);
         let mut code = 0u32;
         GetExitCodeThread(th, &mut code); // для LoadLibraryW код — младшие 32 бита HMODULE; 0 = ошибка
         CloseHandle(th);
+        if waited != 0 {
+            // поток завис — память под путь не освобождаем, чтобы не оборвать его на полпути
+            return fail("Клиентская библиотека не ответила за 10 секунд".into(), &pi);
+        }
         VirtualFreeEx(pi.hProcess, remote, 0, MEM_RELEASE);
         if code == 0 {
-            return fail("Клиентская библиотека не загрузилась (проверьте версию gta_sa.exe 1.0 US)".into(), &pi);
+            return fail(
+                format!("Клиентская библиотека {} не загрузилась (LoadLibrary вернул 0): проверьте, что это SA-MP 0.3.7 для gta_sa.exe 1.0 US и рядом нет повреждённых файлов", dll.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+                &pi,
+            );
         }
 
         ResumeThread(pi.hThread);
@@ -287,6 +333,29 @@ mod tests {
         let out = "\r\nHKEY_CURRENT_USER\\Software\\SAMP\r\n    gta_sa_exe    REG_SZ    C:\\Games\\GTA San Andreas\\gta_sa.exe\r\n\r\n";
         assert_eq!(parse_reg_output(out), Some(PathBuf::from(r"C:\Games\GTA San Andreas")));
         assert_eq!(parse_reg_output("ничего"), None);
+    }
+
+    #[test]
+    fn pe_header_and_bitness() {
+        let d = tmpdir("pe");
+        let mut pe = vec![0u8; 0x100];
+        pe[0] = b'M';
+        pe[1] = b'Z';
+        pe[0x3c] = 0x80; // e_lfanew
+        pe[0x80..0x84].copy_from_slice(b"PE\0\0");
+        pe[0x84..0x86].copy_from_slice(&0x014cu16.to_le_bytes());
+        fs::write(d.join("x86.exe"), &pe).unwrap();
+        pe[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        fs::write(d.join("x64.exe"), &pe).unwrap();
+        fs::write(d.join("junk.exe"), b"not an exe").unwrap();
+        assert_eq!(pe_machine(&d.join("x86.exe")), Some(0x014c));
+        assert_eq!(pe_machine(&d.join("x64.exe")), Some(0x8664));
+        assert_eq!(pe_machine(&d.join("junk.exe")), None);
+        assert_eq!(pe_machine(&d.join("missing.exe")), None);
+        // 32-битная игра + 64-битный лаунчер — ошибка; остальные сочетания — нормально
+        assert!(bitness_error(0x014c, true).unwrap().contains("32-битную"));
+        assert!(bitness_error(0x014c, false).is_none());
+        assert!(bitness_error(0x8664, true).is_none());
     }
 
     #[test]
